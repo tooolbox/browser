@@ -32,10 +32,10 @@ func NewFormData() *FormData {
 //
 // see also: https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-the-form-data-set
 func NewFormDataForm(form HTMLFormElement) *FormData {
-	inputs := form.Elements()
+	elements := form.Elements()
 	formData := NewFormData()
-	for input := range inputs.All() {
-		if input, ok := input.(HTMLInputElement); ok {
+	for el := range elements.All() {
+		if input, ok := el.(HTMLInputElement); ok {
 			name := input.Name()
 			if name == "" {
 				continue
@@ -51,9 +51,59 @@ func NewFormDataForm(form HTMLFormElement) *FormData {
 				// TODO: handle no values
 				formData.Append(name, NewFormDataValueString(input.Value()))
 			}
+			continue
+		}
+		// <select> and <textarea> have no specialized DOM types yet, so read
+		// their name/value from the element directly.
+		if domEl, ok := el.(dom.Element); ok {
+			name, hasName := domEl.GetAttribute("name")
+			if !hasName || name == "" {
+				continue
+			}
+			switch domEl.TagName() {
+			case "SELECT":
+				formData.Append(name, NewFormDataValueString(selectValue(domEl)))
+			case "TEXTAREA":
+				formData.Append(name, NewFormDataValueString(domEl.TextContent()))
+			}
 		}
 	}
 	return formData
+}
+
+// selectValue returns the value of the first <option> carrying the "selected"
+// attribute, falling back to the first option -- which is what a browser
+// submits for a select the user never touched.
+//
+// An option with no "value" attribute submits its text content, per
+// https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-value
+func selectValue(sel dom.Element) string {
+	parent, ok := sel.(dom.ParentNode)
+	if !ok {
+		return ""
+	}
+	options, err := parent.QuerySelectorAll("option")
+	if err != nil {
+		return ""
+	}
+	firstValue := ""
+	for i := 0; i < options.Length(); i++ {
+		opt, ok := options.Item(i).(dom.Element)
+		if !ok {
+			continue
+		}
+		val, hasVal := opt.GetAttribute("value")
+		if !hasVal {
+			val = opt.TextContent()
+		}
+		if i == 0 {
+			firstValue = val
+		}
+		if _, selected := opt.GetAttribute("selected"); selected {
+			return val
+		}
+	}
+	return firstValue
 }
 
 func (d *FormData) AddElement(e dom.Element) {
