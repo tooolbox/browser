@@ -73,6 +73,79 @@ func TestFormDataFormSelectOptionWithoutValueUsesText(t *testing.T) {
 	assert.Equal(t, html.FormDataValue("Green"), formData.Get("colour"))
 }
 
+// A <select multiple> contributes one entry per selected option, in document
+// order -- not just the first.
+func TestFormDataFormMultipleSelectSubmitsEverySelectedOption(t *testing.T) {
+	form := formFromHTML(t, `<form>
+		<select name="colour" multiple>
+			<option value="red" selected>Red</option>
+			<option value="green">Green</option>
+			<option value="blue" selected>Blue</option>
+		</select>
+	</form>`)
+
+	formData := html.NewFormDataForm(form)
+
+	assert.Equal(t,
+		[]html.FormDataValue{html.FormDataValue("red"), html.FormDataValue("blue")},
+		formData.GetAll("colour"),
+		"every selected option is submitted, in document order")
+}
+
+// A <select multiple> with nothing selected submits nothing -- the
+// first-option fallback applies only to single selects.
+func TestFormDataFormMultipleSelectWithNoSelectionSubmitsNothing(t *testing.T) {
+	form := formFromHTML(t, `<form>
+		<input name="username" value="john">
+		<select name="colour" multiple>
+			<option value="red">Red</option>
+			<option value="green">Green</option>
+		</select>
+	</form>`)
+
+	formData := html.NewFormDataForm(form)
+
+	assert.False(t, formData.Has("colour"),
+		"an untouched multiple select contributes no entry")
+	assert.Len(t, formData.Entries, 1, "only the input should be submitted")
+}
+
+// A single select with one option selected still yields exactly one entry
+// even if later options exist.
+func TestFormDataFormSingleSelectSubmitsOneValue(t *testing.T) {
+	form := formFromHTML(t, `<form>
+		<select name="colour">
+			<option value="red" selected>Red</option>
+			<option value="green" selected>Green</option>
+		</select>
+	</form>`)
+
+	formData := html.NewFormDataForm(form)
+
+	assert.Equal(t,
+		[]html.FormDataValue{html.FormDataValue("red")},
+		formData.GetAll("colour"),
+		"a non-multiple select contributes a single value")
+}
+
+// A select with no options contributes nothing, rather than an empty value.
+func TestFormDataFormSelectWithNoOptionsSubmitsNothing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		src  string
+	}{
+		{"single", `<form><input name="username" value="john"><select name="colour"></select></form>`},
+		{"multiple", `<form><input name="username" value="john"><select name="colour" multiple></select></form>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			formData := html.NewFormDataForm(formFromHTML(t, tc.src))
+			assert.False(t, formData.Has("colour"),
+				"a select with no options contributes no entry")
+			assert.Len(t, formData.Entries, 1)
+		})
+	}
+}
+
 // Unnamed controls are skipped, matching the existing behaviour for inputs.
 func TestFormDataFormSkipsUnnamedSelectAndTextarea(t *testing.T) {
 	form := formFromHTML(t, `<form>

@@ -62,7 +62,9 @@ func NewFormDataForm(form HTMLFormElement) *FormData {
 			}
 			switch domEl.TagName() {
 			case "SELECT":
-				formData.Append(name, NewFormDataValueString(selectValue(domEl)))
+				for _, v := range selectValues(domEl) {
+					formData.Append(name, NewFormDataValueString(v))
+				}
 			case "TEXTAREA":
 				formData.Append(name, NewFormDataValueString(domEl.TextContent()))
 			}
@@ -71,22 +73,33 @@ func NewFormDataForm(form HTMLFormElement) *FormData {
 	return formData
 }
 
-// selectValue returns the value of the first <option> carrying the "selected"
-// attribute, falling back to the first option -- which is what a browser
-// submits for a select the user never touched.
+// selectValues returns the values a <select> contributes to the form data set:
+// one entry per selected <option>, in document order.
 //
-// An option with no "value" attribute submits its text content, per
+//   - <select multiple> contributes every selected option, and nothing at all
+//     when none are selected.
+//   - A single select contributes exactly one value; with no option selected it
+//     falls back to the first option, which is what a browser submits for a
+//     select the user never touched.
+//   - A select with no options contributes nothing either way.
+//
+// An option with no "value" attribute contributes its text content, per
 // https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-value
-func selectValue(sel dom.Element) string {
+func selectValues(sel dom.Element) []string {
 	parent, ok := sel.(dom.ParentNode)
 	if !ok {
-		return ""
+		return nil
 	}
 	options, err := parent.QuerySelectorAll("option")
 	if err != nil {
-		return ""
+		return nil
 	}
-	firstValue := ""
+
+	_, multiple := sel.GetAttribute("multiple")
+
+	var selected []string
+	var firstValue string
+	var hasFirst bool
 	for i := 0; i < options.Length(); i++ {
 		opt, ok := options.Item(i).(dom.Element)
 		if !ok {
@@ -96,14 +109,24 @@ func selectValue(sel dom.Element) string {
 		if !hasVal {
 			val = opt.TextContent()
 		}
-		if i == 0 {
-			firstValue = val
+		if !hasFirst {
+			firstValue, hasFirst = val, true
 		}
-		if _, selected := opt.GetAttribute("selected"); selected {
-			return val
+		if _, isSelected := opt.GetAttribute("selected"); isSelected {
+			if !multiple {
+				return []string{val}
+			}
+			selected = append(selected, val)
 		}
 	}
-	return firstValue
+	if multiple {
+		// No fallback: an untouched multiple select submits nothing.
+		return selected
+	}
+	if !hasFirst {
+		return nil // no options at all
+	}
+	return []string{firstValue}
 }
 
 func (d *FormData) AddElement(e dom.Element) {
