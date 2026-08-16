@@ -110,9 +110,11 @@ func TestFormDataFormMultipleSelectWithNoSelectionSubmitsNothing(t *testing.T) {
 	assert.Len(t, formData.Entries, 1, "only the input should be submitted")
 }
 
-// A single select with one option selected still yields exactly one entry
-// even if later options exist.
-func TestFormDataFormSingleSelectSubmitsOneValue(t *testing.T) {
+// Malformed markup: a non-multiple <select> cannot legally have two selected
+// options, but nothing stops an author writing it. Browsers honour the first
+// and ignore the rest; we do the same rather than emitting two entries for a
+// control that can only hold one value.
+func TestFormDataFormSingleSelectWithTwoSelectedOptionsTakesTheFirst(t *testing.T) {
 	form := formFromHTML(t, `<form>
 		<select name="colour">
 			<option value="red" selected>Red</option>
@@ -125,7 +127,7 @@ func TestFormDataFormSingleSelectSubmitsOneValue(t *testing.T) {
 	assert.Equal(t,
 		[]html.FormDataValue{html.FormDataValue("red")},
 		formData.GetAll("colour"),
-		"a non-multiple select contributes a single value")
+		"a non-multiple select contributes exactly one value, the first selected")
 }
 
 // A select with no options contributes nothing, rather than an empty value.
@@ -144,6 +146,140 @@ func TestFormDataFormSelectWithNoOptionsSubmitsNothing(t *testing.T) {
 			assert.Len(t, formData.Entries, 1)
 		})
 	}
+}
+
+// An option's text-derived value is stripped and collapsed of ASCII
+// whitespace -- templates indent their options, and the raw text content
+// would otherwise arrive wrapped in newlines and tabs.
+func TestFormDataFormSelectCollapsesOptionTextWhitespace(t *testing.T) {
+	form := formFromHTML(t, `<form>
+		<select name="colour">
+			<option>
+				Forest   Green
+			</option>
+		</select>
+	</form>`)
+
+	formData := html.NewFormDataForm(form)
+
+	assert.Equal(t, html.FormDataValue("Forest Green"), formData.Get("colour"),
+		"leading/trailing whitespace stripped, interior runs collapsed to one space")
+}
+
+// A disabled control is barred from the form data set.
+func TestFormDataFormSkipsDisabledControls(t *testing.T) {
+	form := formFromHTML(t, `<form>
+		<input name="username" value="john">
+		<input name="nickname" value="johnny" disabled>
+		<select name="colour" disabled><option value="red" selected>Red</option></select>
+		<textarea name="comment" disabled>hello</textarea>
+	</form>`)
+
+	formData := html.NewFormDataForm(form)
+
+	assert.True(t, formData.Has("username"))
+	assert.False(t, formData.Has("nickname"), "disabled input is skipped")
+	assert.False(t, formData.Has("colour"), "disabled select is skipped")
+	assert.False(t, formData.Has("comment"), "disabled textarea is skipped")
+	assert.Len(t, formData.Entries, 1)
+}
+
+// Controls inside a disabled <fieldset> are disabled too -- except those in
+// the fieldset's first <legend>.
+func TestFormDataFormSkipsControlsInDisabledFieldset(t *testing.T) {
+	form := formFromHTML(t, `<form>
+		<fieldset disabled>
+			<legend><input name="in_legend" value="kept"></legend>
+			<input name="in_fieldset" value="dropped">
+			<select name="sel_in_fieldset"><option value="x" selected>X</option></select>
+		</fieldset>
+		<input name="outside" value="kept">
+	</form>`)
+
+	formData := html.NewFormDataForm(form)
+
+	assert.True(t, formData.Has("outside"), "control outside the fieldset is unaffected")
+	assert.True(t, formData.Has("in_legend"), "control in the first legend stays enabled")
+	assert.False(t, formData.Has("in_fieldset"), "control in a disabled fieldset is skipped")
+	assert.False(t, formData.Has("sel_in_fieldset"), "select in a disabled fieldset is skipped")
+}
+
+// An enabled fieldset disables nothing.
+func TestFormDataFormEnabledFieldsetKeepsControls(t *testing.T) {
+	form := formFromHTML(t, `<form>
+		<fieldset>
+			<legend>Details</legend>
+			<input name="username" value="john">
+		</fieldset>
+	</form>`)
+
+	formData := html.NewFormDataForm(form)
+
+	assert.Equal(t, html.FormDataValue("john"), formData.Get("username"))
+}
+
+// Disabled options can be neither selected nor used as the fallback.
+func TestFormDataFormSkipsDisabledOptions(t *testing.T) {
+	t.Run("disabled option is not the fallback", func(t *testing.T) {
+		form := formFromHTML(t, `<form>
+			<select name="colour">
+				<option value="placeholder" disabled>Choose...</option>
+				<option value="red">Red</option>
+			</select>
+		</form>`)
+
+		formData := html.NewFormDataForm(form)
+
+		assert.Equal(t, html.FormDataValue("red"), formData.Get("colour"),
+			"the disabled placeholder is skipped, so red is the first usable option")
+	})
+
+	t.Run("disabled option is not selected", func(t *testing.T) {
+		form := formFromHTML(t, `<form>
+			<select name="colour" multiple>
+				<option value="red" selected>Red</option>
+				<option value="green" selected disabled>Green</option>
+			</select>
+		</form>`)
+
+		formData := html.NewFormDataForm(form)
+
+		assert.Equal(t,
+			[]html.FormDataValue{html.FormDataValue("red")},
+			formData.GetAll("colour"),
+			"a disabled option contributes nothing even when marked selected")
+	})
+
+	t.Run("all options disabled contributes nothing", func(t *testing.T) {
+		form := formFromHTML(t, `<form>
+			<input name="username" value="john">
+			<select name="colour"><option value="red" disabled>Red</option></select>
+		</form>`)
+
+		formData := html.NewFormDataForm(form)
+
+		assert.False(t, formData.Has("colour"))
+		assert.Len(t, formData.Entries, 1)
+	})
+}
+
+// Options inside a disabled <optgroup> are disabled too.
+func TestFormDataFormSkipsOptionsInDisabledOptgroup(t *testing.T) {
+	form := formFromHTML(t, `<form>
+		<select name="colour">
+			<optgroup label="Discontinued" disabled>
+				<option value="puce">Puce</option>
+			</optgroup>
+			<optgroup label="Current">
+				<option value="red">Red</option>
+			</optgroup>
+		</select>
+	</form>`)
+
+	formData := html.NewFormDataForm(form)
+
+	assert.Equal(t, html.FormDataValue("red"), formData.Get("colour"),
+		"options in a disabled optgroup are skipped, including as the fallback")
 }
 
 // Unnamed controls are skipped, matching the existing behaviour for inputs.

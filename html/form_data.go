@@ -35,6 +35,9 @@ func NewFormDataForm(form HTMLFormElement) *FormData {
 	elements := form.Elements()
 	formData := NewFormData()
 	for el := range elements.All() {
+		if domEl, ok := el.(dom.Element); ok && isDisabledControl(domEl) {
+			continue
+		}
 		if input, ok := el.(HTMLInputElement); ok {
 			name := input.Name()
 			if name == "" {
@@ -73,6 +76,55 @@ func NewFormDataForm(form HTMLFormElement) *FormData {
 	return formData
 }
 
+// isDisabledControl reports whether a form control is barred from the form
+// data set because it is disabled -- either by its own attribute, or by
+// sitting inside a disabled <fieldset>.
+//
+// The fieldset rule has an exception: controls inside that fieldset's *first*
+// <legend> stay enabled, so a disabled fieldset can still carry a working
+// control in its caption.
+//
+// see https://html.spec.whatwg.org/multipage/form-control-infrastructure.html#constructing-the-form-data-set
+// and https://html.spec.whatwg.org/multipage/form-elements.html#concept-fieldset-disabled
+func isDisabledControl(el dom.Element) bool {
+	if _, disabled := el.GetAttribute("disabled"); disabled {
+		return true
+	}
+	fieldset, err := el.Closest("fieldset[disabled]")
+	if err != nil || fieldset == nil {
+		return false
+	}
+	// Inside a disabled fieldset. Exempt only if the control sits within that
+	// fieldset's first legend child.
+	legend := firstLegendChild(fieldset)
+	if legend == nil {
+		return true
+	}
+	for anc := el.ParentElement(); anc != nil; anc = anc.ParentElement() {
+		if anc == legend {
+			return false
+		}
+		if anc == fieldset {
+			break
+		}
+	}
+	return true
+}
+
+// firstLegendChild returns a fieldset's first direct <legend> child, or nil.
+func firstLegendChild(fieldset dom.Element) dom.Element {
+	parent, ok := fieldset.(dom.ParentNode)
+	if !ok {
+		return nil
+	}
+	for _, child := range parent.Children().All() {
+		if child.TagName() == "LEGEND" {
+			return child
+		}
+	}
+	return nil
+}
+
 // selectValues returns the values a <select> contributes to the form data set:
 // one entry per selected <option>, in document order.
 //
@@ -83,7 +135,11 @@ func NewFormDataForm(form HTMLFormElement) *FormData {
 //     select the user never touched.
 //   - A select with no options contributes nothing either way.
 //
-// An option with no "value" attribute contributes its text content, per
+// Disabled options, and options inside a disabled <optgroup>, are skipped
+// entirely -- they can be neither selected nor used as the fallback.
+//
+// An option with no "value" attribute contributes its text content with ASCII
+// whitespace stripped and collapsed, per
 // https://html.spec.whatwg.org/multipage/form-elements.html#concept-option-value
 func selectValues(sel dom.Element) []string {
 	parent, ok := sel.(dom.ParentNode)
@@ -105,9 +161,12 @@ func selectValues(sel dom.Element) []string {
 		if !ok {
 			continue
 		}
+		if isDisabledOption(opt) {
+			continue
+		}
 		val, hasVal := opt.GetAttribute("value")
 		if !hasVal {
-			val = opt.TextContent()
+			val = collapseASCIIWhitespace(opt.TextContent())
 		}
 		if !hasFirst {
 			firstValue, hasFirst = val, true
@@ -124,9 +183,35 @@ func selectValues(sel dom.Element) []string {
 		return selected
 	}
 	if !hasFirst {
-		return nil // no options at all
+		return nil // no options at all, or all of them disabled
 	}
 	return []string{firstValue}
+}
+
+// isDisabledOption reports whether an <option> is unselectable: disabled
+// itself, or inside a disabled <optgroup>.
+func isDisabledOption(opt dom.Element) bool {
+	if _, disabled := opt.GetAttribute("disabled"); disabled {
+		return true
+	}
+	group, err := opt.Closest("optgroup[disabled]")
+	return err == nil && group != nil
+}
+
+// collapseASCIIWhitespace strips leading/trailing ASCII whitespace and
+// collapses interior runs to a single space, which is what an <option>'s
+// text-derived value is normalised to. Templates indent their options, so
+// without this a value arrives wrapped in the markup's newlines and tabs.
+func collapseASCIIWhitespace(s string) string {
+	return strings.Join(strings.FieldsFunc(s, isASCIIWhitespace), " ")
+}
+
+func isASCIIWhitespace(r rune) bool {
+	switch r {
+	case ' ', '\t', '\n', '\r', '\f':
+		return true
+	}
+	return false
 }
 
 func (d *FormData) AddElement(e dom.Element) {
