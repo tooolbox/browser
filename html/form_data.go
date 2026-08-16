@@ -46,9 +46,18 @@ func NewFormDataForm(form HTMLFormElement) *FormData {
 			switch input.Type() {
 			case "submit":
 				continue
-			case "checkbox":
+			case "checkbox", "radio":
+				// Only checked controls contribute, and they contribute their
+				// value attribute -- "on" is merely the default when no value
+				// was given, not a replacement for one.
+				//
+				// see https://html.spec.whatwg.org/multipage/input.html#checkbox-state-(type=checkbox):concept-fe-value
 				if input.Checked() {
-					formData.Append(name, "on")
+					value := input.Value()
+					if value == "" {
+						value = "on"
+					}
+					formData.Append(name, NewFormDataValueString(value))
 				}
 			default:
 				// TODO: handle no values
